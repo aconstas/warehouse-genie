@@ -1,0 +1,12 @@
+{
+  "name": "genie-local",
+  "version": "0.1.0",
+  "description": "Local Genie-style NL-to-SQL agent for Databricks. Ollama for inference, curated context pack for grounding.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.19.0" }
+}

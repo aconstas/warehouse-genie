@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Warehouse Genie — local</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="mark">
+        <div class="mark-lamp" aria-hidden="true"></div>
+        <div>
+          <div class="mark-name">Warehouse Genie</div>
+          <div class="mark-sub">local · self-hosted</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <a href="#/chat" data-route="chat" class="nav-item">Ask</a>
+        <a href="#/pack" data-route="pack" class="nav-item">Context pack</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="health" id="health-databricks">
+          <span class="dot"></span>
+          <span class="health-name">Databricks</span>
+          <span class="health-detail" title=""></span>
+        </div>
+        <div class="health" id="health-ollama">
+          <span class="dot"></span>
+          <span class="health-name">Ollama</span>
+          <span class="health-detail" title=""></span>
+        </div>
+        <button class="btn btn-ghost btn-block" id="btn-settings">Settings</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main"></main>
+  </div>
+
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" id="modal"></div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

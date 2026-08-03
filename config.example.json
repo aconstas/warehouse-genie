@@ -1,0 +1,9 @@
+{
+  "databricksHost": "https://your-workspace.cloud.databricks.com",
+  "databricksToken": "dapi...",
+  "warehouseId": "your-warehouse-id",
+  "ollamaUrl": "http://127.0.0.1:11434",
+  "ollamaModel": "qwen3",
+  "maxRetries": 2,
+  "rowLimit": 100
+}

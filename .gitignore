@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+
+# Holds the Databricks PAT in plaintext — never commit
+config.json
+
+# The context pack ships separately from app code (versioned JSON,
+# exported/imported via the UI); it also contains internal schema details
+context-pack.json
+
+# Local Claude Code state
+.claude/settings.local.json
