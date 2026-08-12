@@ -10,3 +10,6 @@ context-pack.json
 
 # Local Claude Code state
 .claude/settings.local.json
+
+# Project-specific Claude instructions — kept local, not tracked
+CLAUDE.md
