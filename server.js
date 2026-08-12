@@ -11,11 +11,38 @@ const agent = require("./lib/agent");
 const PORT = process.env.PORT || 4177;
 const app = express();
 
+// Anti-DNS-rebinding: this server holds the Databricks PAT and has no auth, so
+// it must only ever answer requests addressed to loopback. A malicious page
+// that rebinds a hostname to 127.0.0.1 would otherwise reach the API
+// same-origin and could repoint databricksHost to exfiltrate the token. Reject
+// any Host that isn't localhost/127.0.0.1 (optionally with our port).
+const ALLOWED_HOSTS = new Set([
+  `127.0.0.1:${PORT}`, `localhost:${PORT}`,
+  "127.0.0.1", "localhost"
+]);
+app.use((req, res, next) => {
+  const host = (req.headers.host || "").toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    return res.status(403).json({ error: "Forbidden host" });
+  }
+  next();
+});
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// In-memory conversation state: id -> [{question, sql}]
+// In-memory conversation state: id -> [{question, sql}]. Capped so a long-lived
+// process can't grow it without bound; oldest conversations are evicted first.
 const conversations = new Map();
+const MAX_CONVERSATIONS = 200;
+
+function rememberConversation(convId, history) {
+  conversations.delete(convId);          // re-insert so this id becomes newest (LRU-ish)
+  conversations.set(convId, history);
+  while (conversations.size > MAX_CONVERSATIONS) {
+    conversations.delete(conversations.keys().next().value); // drop oldest
+  }
+}
 
 /* -------------------------------------------------------------------- chat */
 
@@ -43,7 +70,7 @@ app.post("/api/chat", async (req, res) => {
     const lastGoodSql = turn.attempts?.findLast?.((a) => a.status === "succeeded")?.sql;
     if (lastGoodSql) {
       history.push({ question: message.trim(), sql: lastGoodSql });
-      conversations.set(convId, history.slice(-8));
+      rememberConversation(convId, history.slice(-8));
     }
 
     res.json({ conversationId: convId, ...turn });
@@ -96,8 +123,26 @@ app.post("/api/pack/sync-tables", async (req, res) => {
 
 app.get("/api/settings", (_req, res) => res.json(config.publicView(config.load())));
 
+const SETTINGS_KEYS = [
+  "databricksHost", "databricksToken", "warehouseId",
+  "ollamaUrl", "ollamaModel", "maxRetries", "rowLimit"
+];
+
 app.put("/api/settings", (req, res) => {
-  const patch = { ...req.body };
+  const body = req.body || {};
+  // Whitelist known keys only — never let the client write arbitrary config.
+  const patch = {};
+  for (const key of SETTINGS_KEYS) {
+    if (body[key] !== undefined) patch[key] = body[key];
+  }
+  // Coerce the numeric settings and reject junk rather than persisting a string.
+  for (const key of ["maxRetries", "rowLimit"]) {
+    if (patch[key] !== undefined) {
+      const n = Number(patch[key]);
+      if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: `${key} must be a non-negative number` });
+      patch[key] = Math.floor(n);
+    }
+  }
   // Don't overwrite the stored token with the masked value round-tripped from the UI
   if (!patch.databricksToken || patch.databricksToken.startsWith("••••")) delete patch.databricksToken;
   res.json(config.publicView(config.save(patch)));

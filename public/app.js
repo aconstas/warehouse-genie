@@ -530,7 +530,7 @@ async function settingsModal() {
     <label>Ollama URL</label>
     <input type="text" id="s-ollama" value="${esc(s.ollamaUrl)}" class="mono" />
     <label>Model</label>
-    <input type="text" id="s-model" value="${esc(s.ollamaModel)}" placeholder="qwen3:14b" class="mono" />
+    <input type="text" id="s-model" value="${esc(s.ollamaModel)}" placeholder="qwen3" class="mono" />
     <div class="modal-actions">
       <button class="btn btn-ghost" id="s-cancel">Cancel</button>
       <button class="btn btn-primary" id="s-save">Save & test</button>
