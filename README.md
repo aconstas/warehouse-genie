@@ -1,4 +1,5 @@
 # Warehouse Genie (local)
+<img width="1276" height="810" alt="image" src="https://github.com/user-attachments/assets/11e90dc9-ee11-47bc-b913-67b687734c34" />
 
 A self-hosted, Genie-style NL→SQL agent for Databricks. A local model (via Ollama) writes Spark SQL grounded in a curated **context pack** — your team's equivalent of a Genie space — executes it through the Databricks SQL Statement Execution API with the user's own permissions, self-heals on errors, and shows every attempt it took.
 
