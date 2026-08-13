@@ -86,7 +86,7 @@ No frontend changes are required — it's a static bundle talking to localhost o
 
 ## Upgrade path worth doing next
 
-- **Embeddings retrieval**: `nomic-embed-text` via Ollama + `sqlite-vec`, replacing `lib/retrieval.js` scoring.
-- **Streaming**: Ollama supports it; stream tokens into the statement card.
-- **Result charts**: a bar/line toggle over the result table covers most stakeholder asks.
-- **Feedback loop**: a 👍 on a good answer should offer "save as example" into the pack — that's how the pack compounds.
+- [ ] **Embeddings retrieval**: `nomic-embed-text` via Ollama + `sqlite-vec`, replacing `lib/retrieval.js` scoring.
+- [x] **Streaming**: SQL generation and the answer summary stream token-by-token into the statement card as the model produces them (`/api/chat` streams NDJSON events).
+- [ ] **Result charts**: a bar/line toggle over the result table covers most stakeholder asks.
+- [ ] **Feedback loop**: a 👍 on a good answer should offer "save as example" into the pack — that's how the pack compounds.

@@ -136,13 +136,53 @@ label:first-child { margin-top: 0; }
   padding: 9px 14px; border-radius: 14px 14px 4px 14px; max-width: 78%;
 }
 .msg-agent .summary { margin: 0 0 12px; }
-.msg-agent .plain { color: var(--text); }
+.msg-agent .plain { color: var(--text); line-height: 1.55; }
+.msg-agent .plain.draft { color: var(--muted); white-space: pre-wrap; } /* raw text before it's classified */
+/* rendered markdown inside a text answer */
+.msg-agent .plain > :first-child { margin-top: 0; }
+.msg-agent .plain > :last-child { margin-bottom: 0; }
+.msg-agent .plain p { margin: 0 0 10px; }
+.msg-agent .plain ul, .msg-agent .plain ol { margin: 0 0 10px; padding-left: 22px; }
+.msg-agent .plain li { margin: 3px 0; }
+.msg-agent .plain li::marker { color: var(--faint); }
+.msg-agent .plain h4, .msg-agent .plain h5, .msg-agent .plain h6 { margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+.msg-agent .plain strong { font-weight: 600; }
+.msg-agent .summary code, .msg-agent .plain code {
+  font-family: var(--mono); font-size: 0.9em;
+  background: var(--surface); border: 1px solid var(--line-soft);
+  padding: 1px 5px; border-radius: 5px;
+}
 .msg-error { color: var(--err); font-size: 13.5px; }
 
 .thinking { display: flex; gap: 8px; align-items: center; color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .thinking .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); animation: pulse 1.2s infinite ease-in-out; }
 @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .thinking .dot { animation: none; } }
+
+/* collapsed "Thinking" disclosure — the model's reasoning, tucked away */
+.thoughts { margin: 2px 0 10px; }
+.thoughts > summary {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  list-style: none; width: fit-content;
+  padding: 2px 10px 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--bg);
+  color: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+}
+.thoughts > summary::-webkit-details-marker { display: none; }
+.thoughts > summary::before {
+  content: "▸"; color: var(--faint); font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.thoughts[open] > summary::before { transform: rotate(90deg); }
+.thoughts > summary:hover { color: var(--text); border-color: var(--line-soft); }
+.thoughts-body {
+  margin-top: 8px; padding: 10px 14px;
+  border: 1px solid var(--line-soft); border-radius: var(--radius);
+  background: var(--surface); color: var(--muted);
+  font-size: 13px; line-height: 1.5;
+}
+.thoughts-body p { margin: 0 0 8px; }
+.thoughts-body > :last-child { margin-bottom: 0; }
 
 /* statement card — the signature element */
 .stmt {

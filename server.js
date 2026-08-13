@@ -51,20 +51,32 @@ app.post("/api/chat", async (req, res) => {
   if (!message?.trim()) return res.status(400).json({ error: "Empty message" });
 
   const convId = conversationId || crypto.randomUUID();
-  const history = conversations.get(convId) || [];
-  const cfg = config.load();
-  const pack = contextPack.load();
 
-  if (!pack.tables.length) {
-    return res.json({
-      conversationId: convId,
-      kind: "text",
-      text: "The context pack has no tables yet. Open Context Pack and sync a schema from Databricks (or add tables manually) so I know what data exists."
-    });
-  }
+  // Stream the turn as newline-delimited JSON so the UI can render tokens live.
+  // Every line is one event; the terminal line is { type: "done" | "error" }.
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Accel-Buffering", "no"); // don't let a proxy buffer the stream
+  const send = (obj) => res.write(JSON.stringify(obj) + "\n");
+
+  send({ type: "meta", conversationId: convId });
 
   try {
-    const turn = await agent.runTurn({ cfg, pack, question: message.trim(), history });
+    const cfg = config.load();
+    const pack = contextPack.load();
+    const history = conversations.get(convId) || [];
+
+    if (!pack.tables.length) {
+      send({
+        type: "done",
+        conversationId: convId,
+        kind: "text",
+        text: "The context pack has no tables yet. Open Context Pack and sync a schema from Databricks (or add tables manually) so I know what data exists."
+      });
+      return res.end();
+    }
+
+    const turn = await agent.runTurn({ cfg, pack, question: message.trim(), history, onEvent: send });
 
     // Remember successful turns so follow-ups ("now break that out by month") work
     const lastGoodSql = turn.attempts?.findLast?.((a) => a.status === "succeeded")?.sql;
@@ -73,9 +85,11 @@ app.post("/api/chat", async (req, res) => {
       rememberConversation(convId, history.slice(-8));
     }
 
-    res.json({ conversationId: convId, ...turn });
+    send({ type: "done", conversationId: convId, ...turn });
   } catch (e) {
-    res.status(500).json({ conversationId: convId, error: e.message });
+    send({ type: "error", conversationId: convId, error: e.message });
+  } finally {
+    res.end();
   }
 });
 

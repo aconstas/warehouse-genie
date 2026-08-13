@@ -6,7 +6,7 @@ const main = $("#main");
 
 const state = {
   route: "chat",
-  chat: { messages: [], conversationId: null, busy: false },
+  chat: { messages: [], conversationId: null, busy: false, streaming: null },
   pack: null,          // saved copy
   draft: null,         // editable copy
   dirty: false,
@@ -19,6 +19,55 @@ const state = {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* Minimal, safe Markdown. The model emits a small subset (bold, italic, inline
+   code, ordered/unordered lists, paragraphs) when it answers in prose. We
+   ALWAYS esc() first so no model-supplied HTML survives, then wrap our own tags
+   around the escaped text — never a dependency, never raw HTML injection. */
+function mdInline(s) {
+  // esc() first so no model HTML survives; then bold/italic, then inline code.
+  // Order matters: table names in `code` contain underscores but never '*', so
+  // running bold/italic before code can't corrupt them — no stashing needed.
+  return esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+function renderMarkdown(src) {
+  const lines = String(src ?? "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  const isOl = (l) => /^\s*\d+\.\s+/.test(l);
+  const isUl = (l) => /^\s*[-*]\s+/.test(l);
+  const isH = (l) => /^#{1,3}\s+/.test(l);
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*$/.test(line)) { i++; continue; }
+
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { const lvl = Math.min(6, h[1].length + 3); out.push(`<h${lvl}>${mdInline(h[2])}</h${lvl}>`); i++; continue; }
+
+    if (isOl(line)) {
+      const items = [];
+      while (i < lines.length && isOl(lines[i])) { items.push(`<li>${mdInline(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`); i++; }
+      out.push(`<ol>${items.join("")}</ol>`); continue;
+    }
+    if (isUl(line)) {
+      const items = [];
+      while (i < lines.length && isUl(lines[i])) { items.push(`<li>${mdInline(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`); i++; }
+      out.push(`<ul>${items.join("")}</ul>`); continue;
+    }
+
+    const buf = [];
+    while (i < lines.length && !/^\s*$/.test(lines[i]) && !isOl(lines[i]) && !isUl(lines[i]) && !isH(lines[i])) {
+      buf.push(lines[i]); i++;
+    }
+    out.push(`<p>${mdInline(buf.join(" "))}</p>`);
+  }
+  return out.join("");
 }
 
 function toast(msg, isErr = false) {
@@ -92,7 +141,9 @@ function renderChat() {
       <div class="chat-scroll" id="chat-scroll">
         <div class="chat-inner" id="chat-inner">
           ${messages.length === 0 ? emptyStateHtml() : messages.map(msgHtml).join("")}
-          ${busy ? `<div class="msg msg-agent"><div class="thinking"><span class="dot"></span>generating & executing…</div></div>` : ""}
+          ${state.chat.streaming
+            ? streamingCardHtml(state.chat.streaming)
+            : (busy ? `<div class="msg msg-agent"><div class="thinking"><span class="dot"></span>generating & executing…</div></div>` : "")}
         </div>
       </div>
       <div class="composer">
@@ -114,7 +165,7 @@ function renderChat() {
   $("#chat-reset")?.addEventListener("click", (e) => {
     e.preventDefault();
     api("/api/chat/reset", { method: "POST", body: { conversationId: state.chat.conversationId } }).catch(() => {});
-    state.chat = { messages: [], conversationId: null, busy: false };
+    state.chat = { messages: [], conversationId: null, busy: false, streaming: null };
     renderChat();
   });
   document.querySelectorAll(".suggestion").forEach((b) =>
@@ -156,10 +207,11 @@ function msgHtml(m) {
     return `<div class="msg msg-agent"><div class="msg-error">⚠ ${esc(m.error)}</div></div>`;
   }
   if (m.kind === "text") {
-    return `<div class="msg msg-agent"><div class="plain">${esc(m.text)}</div></div>`;
+    return `<div class="msg msg-agent"><div class="plain">${renderMarkdown(m.text)}</div></div>`;
   }
   return `<div class="msg msg-agent">
-    ${m.summary ? `<p class="summary">${esc(m.summary)}</p>` : ""}
+    ${m.summary ? `<p class="summary">${mdInline(m.summary)}</p>` : ""}
+    ${thoughtsHtml(m.thinking)}
     ${statementCardHtml(m)}
     ${m.meta ? `<div class="grounding">grounded on <b>${m.meta.tablesUsed.length} table${m.meta.tablesUsed.length === 1 ? "" : "s"}</b> · <b>${m.meta.examplesUsed} example${m.meta.examplesUsed === 1 ? "" : "s"}</b> retrieved</div>` : ""}
   </div>`;
@@ -215,6 +267,176 @@ function resultTableHtml(r) {
     <div class="result-foot">${r.rowCount} row${r.rowCount === 1 ? "" : "s"}${r.truncated ? " · truncated" : ""}</div>`;
 }
 
+const PHASE_LABEL = {
+  generating: "generating…",
+  executing: "running query…",
+  summarizing: "summarizing…"
+};
+
+// While the model is generating we don't yet know if the answer is a SQL block
+// or a plain-text reply (e.g. "what tables do you have?"). Guess from the first
+// few characters. Prose while generating a SQL turn is the model's reasoning —
+// it goes into a collapsed "thinking" disclosure, never a prominent block. The
+// definitive `sql`/`text` events correct any wrong guess.
+function classifyDraft(gen) {
+  const t = gen.replace(/^\s+/, "");
+  if (!t) return "draft";
+  if (t.startsWith("```")) return "sql";
+  if (/^(select|with|show|describe|desc|explain)\b/i.test(t)) return "sql";
+  if (t.length >= 3) return "thinking";
+  return "draft";
+}
+
+/** Drop fenced ```code``` blocks so the reasoning shown in the disclosure
+ *  doesn't repeat the SQL that's already rendered in the statement card. */
+function stripFencedSql(text) {
+  return String(text || "").replace(/```[\s\S]*?```/g, "").trim();
+}
+
+/** Collapsed-by-default "Thinking" disclosure. Native <details> needs no JS
+ *  binding and survives renderChat() re-renders. `open` renders it expanded
+ *  (unused today — always collapsed). bodyId lets the live stream target it. */
+function thoughtsHtml(reasoning, { bodyId = "" } = {}) {
+  if (!reasoning) return "";
+  return `<details class="thoughts">
+    <summary>Thinking</summary>
+    <div class="thoughts-body"${bodyId ? ` id="${bodyId}"` : ""}>${renderMarkdown(reasoning)}</div>
+  </details>`;
+}
+
+function streamingCardHtml(s) {
+  const status = `<div class="thinking" id="stream-status"><span class="dot"></span>${esc(s.status)}</div>`;
+
+  if (s.mode === "sql") {
+    return `<div class="msg msg-agent">
+      <p class="summary" id="stream-summary" ${s.summary ? "" : "hidden"}>${mdInline(s.summary)}</p>
+      ${thoughtsHtml(s.think)}
+      <div class="stmt">
+        <div class="stmt-trail" id="stream-trail">${liveTrailHtml(s.attempts)}</div>
+        <pre class="stmt-sql" id="stream-gen" ${s.gen ? "" : "hidden"}>${esc(s.gen)}</pre>
+        ${status}
+      </div>
+    </div>`;
+  }
+
+  if (s.mode === "text") {
+    // a plain-text answer IS the answer — show it normally, never hidden
+    return `<div class="msg msg-agent">
+      <div class="plain" id="stream-gen" ${s.gen ? "" : "hidden"}>${renderMarkdown(s.gen)}</div>
+      ${status}
+    </div>`;
+  }
+
+  if (s.mode === "thinking") {
+    // reasoning before SQL — collapsed by default so it doesn't flash prominently
+    return `<div class="msg msg-agent">
+      ${status}
+      ${thoughtsHtml(s.gen, { bodyId: "stream-think" })}
+    </div>`;
+  }
+
+  // draft — momentary, before we can tell SQL vs prose; show only the status
+  return `<div class="msg msg-agent">${status}</div>`;
+}
+
+function liveTrailHtml(attempts) {
+  let html = `<span class="trail-chip">sql generated</span>`;
+  for (const a of attempts) {
+    html += `<span class="trail-arrow">→</span>`;
+    html += a.status === "succeeded" ? `<span class="trail-chip ok">✓ ran</span>`
+      : a.status === "blocked" ? `<span class="trail-chip err">blocked</span>`
+      : `<span class="trail-chip err">✗ failed</span>`;
+  }
+  return html;
+}
+
+/* live DOM updates that avoid re-rendering the whole chat on every token */
+function setStreamGen(t) {
+  const el = $("#stream-gen");
+  if (el) {
+    // SQL streams as raw monospace; prose/draft renders Markdown as it arrives.
+    if (state.chat.streaming?.mode === "sql") el.textContent = t;
+    else el.innerHTML = renderMarkdown(t);
+    el.hidden = !t;
+  }
+  scrollChat();
+}
+function setStreamThink(t) { const el = $("#stream-think"); if (el) el.innerHTML = renderMarkdown(t); scrollChat(); }
+function setStreamSummary(t) { const el = $("#stream-summary"); if (el) { el.innerHTML = mdInline(t); el.hidden = !t; } scrollChat(); }
+function setStreamStatus(t) { const el = $("#stream-status"); if (el) el.innerHTML = `<span class="dot"></span>${esc(t)}`; }
+function setStreamTrail(a) { const el = $("#stream-trail"); if (el) el.innerHTML = liveTrailHtml(a); }
+function scrollChat() { const s = $("#chat-scroll"); if (s) s.scrollTop = s.scrollHeight; }
+
+/** Apply one stream event. Returns true when the turn is finished.
+ *  Structural changes (mode switch, finalized SQL, new attempt) re-render the
+ *  card; token appends update the relevant node in place to stay smooth. */
+function handleStreamEvent(evt, s) {
+  switch (evt.type) {
+    case "meta":
+      if (evt.conversationId) state.chat.conversationId = evt.conversationId;
+      return false;
+    case "phase":
+      s.status = PHASE_LABEL[evt.phase] || "working…";
+      if (evt.phase === "generating") { s.gen = ""; s.mode = "draft"; renderChat(); } // reset per generation
+      else setStreamStatus(s.status);
+      return false;
+    case "gen_token":
+      s.gen += evt.text;
+      if (s.mode === "draft") {
+        const m = classifyDraft(s.gen);
+        if (m !== "draft") { s.mode = m; renderChat(); return false; } // structure changed
+      }
+      if (s.mode === "thinking") setStreamThink(s.gen);
+      else setStreamGen(s.gen);
+      return false;
+    case "sql":
+      s.think = stripFencedSql(s.gen); // keep the reasoning for the collapsed dropdown
+      s.gen = evt.sql;                 // swap the raw token stream for the clean SQL
+      s.mode = "sql";
+      renderChat();
+      return false;
+    case "attempt":
+      s.attempts.push(evt.attempt);
+      s.mode = "sql";
+      renderChat();
+      return false;
+    case "result":
+      s.status = "rendering results…";
+      setStreamStatus(s.status);
+      return false;
+    case "summary_token":
+      s.summary += evt.text;
+      setStreamSummary(s.summary);
+      return false;
+    case "text":
+      s.gen = evt.text;              // plain-text answer renders as prose, not a SQL card
+      s.mode = "text";
+      renderChat();
+      return false;
+    case "done": {
+      const { type, conversationId, ...msg } = evt;
+      if (conversationId) state.chat.conversationId = conversationId;
+      // Carry the captured reasoning onto the finished SQL answer (text answers
+      // have no reasoning to keep — the prose there was the answer itself).
+      const thinking = msg.kind === "sql" ? s.think : "";
+      state.chat.messages.push({ role: "agent", ...msg, thinking });
+      endStream();
+      return true;
+    }
+    case "error":
+      state.chat.messages.push({ role: "agent", error: evt.error });
+      endStream();
+      return true;
+  }
+  return false;
+}
+
+function endStream() {
+  state.chat.busy = false;
+  state.chat.streaming = null;
+  renderChat();
+}
+
 async function sendMessage() {
   const input = $("#composer-input");
   const text = input.value.trim();
@@ -222,20 +444,47 @@ async function sendMessage() {
 
   state.chat.messages.push({ role: "user", text });
   state.chat.busy = true;
+  state.chat.streaming = { status: "generating…", mode: "draft", gen: "", think: "", summary: "", attempts: [] };
   renderChat();
 
+  const s = state.chat.streaming;
   try {
-    const res = await api("/api/chat", {
+    const res = await fetch("/api/chat", {
       method: "POST",
-      body: { message: text, conversationId: state.chat.conversationId }
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, conversationId: state.chat.conversationId })
     });
-    state.chat.conversationId = res.conversationId;
-    state.chat.messages.push({ role: "agent", ...res });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finished = false;
+    while (!finished) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (handleStreamEvent(evt, s)) { finished = true; break; }
+      }
+    }
+    // Stream closed without a terminal event (e.g. server crash) — recover.
+    if (!finished && state.chat.streaming) {
+      state.chat.messages.push({ role: "agent", error: "The response ended unexpectedly." });
+      endStream();
+    }
   } catch (e) {
     state.chat.messages.push({ role: "agent", error: e.message });
-  } finally {
-    state.chat.busy = false;
-    renderChat();
+    endStream();
   }
 }
 
