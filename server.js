@@ -168,6 +168,24 @@ app.get("/api/health", async (_req, res) => {
   res.json({ databricks: db, ollama: llm });
 });
 
+/* List models installed in the user's Ollama so Settings can offer a dropdown.
+   Optional ?url= previews a host the user has typed but not yet saved. */
+app.get("/api/ollama/models", async (req, res) => {
+  const cfg = config.load();
+  if (req.query.url) {
+    if (!/^https?:\/\//i.test(String(req.query.url))) {
+      return res.status(400).json({ ok: false, models: [], error: "URL must start with http:// or https://" });
+    }
+    cfg.ollamaUrl = String(req.query.url);
+  }
+  try {
+    const models = await ollama.listModels(cfg);
+    res.json({ ok: true, models });
+  } catch (e) {
+    res.json({ ok: false, models: [], error: e.message });
+  }
+});
+
 /* Preview the exact prompt the agent would build for a question (data team debugging aid) */
 app.post("/api/prompt-preview", (req, res) => {
   const { question } = req.body || {};

@@ -765,6 +765,43 @@ function exampleModal(index) {
 
 /* ───────────────────────────────────────────── settings modal */
 
+/** Fill the model <select> with the models installed in the configured Ollama.
+ *  `preselect` (the saved model) wins on first open; afterwards we keep whatever
+ *  is currently chosen. The saved/chosen model is always kept as an option even
+ *  if it isn't installed (or Ollama is down), so Save never loses it. */
+async function refreshModels(preselect) {
+  const sel = $("#s-model");
+  const status = $("#s-model-status");
+  if (!sel) return;
+  const want = (preselect ?? sel.value ?? "").trim();
+  const url = $("#s-ollama")?.value.trim();
+
+  status.textContent = "Loading models…";
+  let data;
+  try {
+    data = await api("/api/ollama/models" + (url ? `?url=${encodeURIComponent(url)}` : ""));
+  } catch {
+    data = { ok: false, models: [] };
+  }
+
+  const models = data.models || [];
+  // Same readiness rule as the server health check: exact, else a tag of the family.
+  const matches = (m) => m === want || (want && m.startsWith(want + ":"));
+  const installedMatch = models.find((m) => m === want) || models.find((m) => matches(m));
+  const options = [...models];
+  if (want && !installedMatch) options.unshift(want); // keep the current setting selectable
+  const selectedVal = installedMatch || want || options[0] || "";
+
+  sel.innerHTML = options.map((m) => {
+    const label = (m === want && !installedMatch) ? `${m} (not installed)` : m;
+    return `<option value="${esc(m)}" ${m === selectedVal ? "selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+
+  status.textContent = data.ok
+    ? `${models.length} model${models.length === 1 ? "" : "s"} installed`
+    : "Ollama not reachable — start it and click ↻";
+}
+
 async function settingsModal() {
   const s = await api("/api/settings");
   openModal(`
@@ -779,11 +816,22 @@ async function settingsModal() {
     <label>Ollama URL</label>
     <input type="text" id="s-ollama" value="${esc(s.ollamaUrl)}" class="mono" />
     <label>Model</label>
-    <input type="text" id="s-model" value="${esc(s.ollamaModel)}" placeholder="qwen3" class="mono" />
+    <div style="display:flex; gap:8px; align-items:center">
+      <select id="s-model" class="mono"></select>
+      <button class="btn btn-sm" id="s-model-refresh" type="button" title="Reload installed models">↻</button>
+    </div>
+    <div class="hint" id="s-model-status" style="margin-top:6px">Loading models…</div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="s-cancel">Cancel</button>
       <button class="btn btn-primary" id="s-save">Save & test</button>
     </div>`);
+
+  // Populate the model dropdown from the user's Ollama; refresh on demand or
+  // when the URL changes.
+  refreshModels(s.ollamaModel);
+  $("#s-model-refresh").addEventListener("click", () => refreshModels());
+  $("#s-ollama").addEventListener("change", () => refreshModels());
+
   $("#s-cancel").addEventListener("click", closeModal);
   $("#s-save").addEventListener("click", async () => {
     await api("/api/settings", {
