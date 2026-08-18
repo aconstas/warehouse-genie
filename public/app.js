@@ -11,7 +11,8 @@ const state = {
   draft: null,         // editable copy
   dirty: false,
   packTab: "tables",
-  health: null
+  health: null,
+  diagnostics: { last: null, history: [] } // per-query inference metrics (session-scoped)
 };
 
 /* ───────────────────────────────────────────── utilities */
@@ -420,6 +421,11 @@ function handleStreamEvent(evt, s) {
       // have no reasoning to keep — the prose there was the answer itself).
       const thinking = msg.kind === "sql" ? s.think : "";
       state.chat.messages.push({ role: "agent", ...msg, thinking });
+      if (msg.stats) {
+        state.diagnostics.last = msg.stats;
+        state.diagnostics.history.push(msg.stats);
+        if (state.diagnostics.history.length > 50) state.diagnostics.history.shift();
+      }
       endStream();
       return true;
     }
@@ -765,6 +771,27 @@ function exampleModal(index) {
 
 /* ───────────────────────────────────────────── settings modal */
 
+/** Inference metrics for admins — last query + session average. Reads
+ *  session-scoped client state; the server terminal log is the durable record. */
+function diagnosticsHtml() {
+  const { last, history } = state.diagnostics;
+  if (!last) {
+    return `<div class="hint" style="margin:0">No queries yet this session — ask something, then reopen Settings.</div>`;
+  }
+  // Session average tok/s = total generated tokens / total generation seconds.
+  const totGen = history.reduce((a, s) => a + (s.genTokens || 0), 0);
+  const totSec = history.reduce((a, s) => a + (s.genSeconds || 0), 0);
+  const avg = totSec ? (totGen / totSec).toFixed(1) : "n/a";
+  const rate = last.genTokPerSec != null ? `${last.genTokPerSec}` : "n/a";
+  return `
+    <div class="diag">
+      <div class="diag-row"><span>Last query</span><b>${rate} tok/s</b></div>
+      <div class="diag-sub">${last.genTokens} generated · ${last.promptTokens} prompt tokens · ${last.llmCalls} model call${last.llmCalls === 1 ? "" : "s"}</div>
+      <div class="diag-sub">${last.wallSeconds}s total · ${last.totalModelSeconds}s model${last.loadSeconds ? ` · ${last.loadSeconds}s load` : ""} · ${esc(last.model)}</div>
+      <div class="diag-row" style="margin-top:8px"><span>Session (${history.length} quer${history.length === 1 ? "y" : "ies"})</span><b>${avg} tok/s avg</b></div>
+    </div>`;
+}
+
 /** Fill the model <select> with the models installed in the configured Ollama.
  *  `preselect` (the saved model) wins on first open; afterwards we keep whatever
  *  is currently chosen. The saved/chosen model is always kept as an option even
@@ -821,6 +848,10 @@ async function settingsModal() {
       <button class="btn btn-sm" id="s-model-refresh" type="button" title="Reload installed models">↻</button>
     </div>
     <div class="hint" id="s-model-status" style="margin-top:6px">Loading models…</div>
+
+    <div class="diag-head">Diagnostics <span class="diag-tag">inference speed</span></div>
+    ${diagnosticsHtml()}
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="s-cancel">Cancel</button>
       <button class="btn btn-primary" id="s-save">Save & test</button>

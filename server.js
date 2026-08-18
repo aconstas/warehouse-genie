@@ -36,6 +36,17 @@ app.use(express.static(path.join(__dirname, "public")));
 const conversations = new Map();
 const MAX_CONVERSATIONS = 200;
 
+/** One concise line per finished turn — inference speed for admins watching the
+ *  terminal (the durable record; the UI Diagnostics panel is session-scoped). */
+function logTurnMetrics(stats) {
+  if (!stats) return;
+  const rate = stats.genTokPerSec != null ? `${stats.genTokPerSec} tok/s` : "n/a";
+  console.log(
+    `[turn] model=${stats.model} gen=${stats.genTokens}tok/${stats.genSeconds}s=${rate} ` +
+    `prompt=${stats.promptTokens}tok calls=${stats.llmCalls} wall=${stats.wallSeconds}s`
+  );
+}
+
 function rememberConversation(convId, history) {
   conversations.delete(convId);          // re-insert so this id becomes newest (LRU-ish)
   conversations.set(convId, history);
@@ -85,6 +96,7 @@ app.post("/api/chat", async (req, res) => {
       rememberConversation(convId, history.slice(-8));
     }
 
+    logTurnMetrics(turn.stats);
     send({ type: "done", conversationId: convId, ...turn });
   } catch (e) {
     send({ type: "error", conversationId: convId, error: e.message });

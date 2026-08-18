@@ -159,6 +159,22 @@ label:first-child { margin-top: 0; }
 @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .thinking .dot { animation: none; } }
 
+/* Settings → Diagnostics (admin inference metrics) */
+.diag-head {
+  margin: 18px 0 8px; font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.diag-tag { color: var(--faint); text-transform: none; letter-spacing: 0; font-size: 10.5px; }
+.diag {
+  border: 1px solid var(--line-soft); border-radius: var(--radius);
+  background: var(--surface); padding: 12px 14px;
+}
+.diag-row { display: flex; justify-content: space-between; align-items: baseline; }
+.diag-row span { color: var(--muted); font-size: 12.5px; }
+.diag-row b { font-family: var(--mono); font-size: 14px; color: var(--text); }
+.diag-sub { color: var(--faint); font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+
 /* collapsed "Thinking" disclosure — the model's reasoning, tucked away */
 .thoughts { margin: 2px 0 10px; }
 .thoughts > summary {
