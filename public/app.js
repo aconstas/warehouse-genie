@@ -180,6 +180,7 @@ function renderChat() {
     btn.addEventListener("click", () => {
       navigator.clipboard.writeText(btn.dataset.copySql).then(() => toast("SQL copied"));
     }));
+  bindChartControls();
 
   const scroll = $("#chat-scroll");
   scroll.scrollTop = scroll.scrollHeight;
@@ -198,7 +199,37 @@ function emptyStateHtml() {
     </div>`;
 }
 
-let msgSeq = 0;
+let msgSeq = 0;      // per-render id for error-detail toggles
+let msgIdSeq = 0;    // stable per-message id for chart view-state
+
+const CHART_WORDS = /\b(bar|line|scatter|area|chart|charts|graph|plot|trend|trending|visuali[sz]e|over time|by (month|week|day|quarter|year))\b/i;
+
+/** Should this answer open as a chart, and if so which type, based on the
+ *  question wording? Returns null (stay a table) or a chart type. */
+function wantsChart(question) {
+  if (!question || !CHART_WORDS.test(question)) return null;
+  if (/\bscatter\b/i.test(question)) return "scatter";
+  if (/\bbar\b/i.test(question)) return "bar";
+  if (/\b(line|trend|trending|over time|by (month|week|day|quarter|year))\b/i.test(question)) return "line";
+  return "auto"; // a chart is wanted; use the inferred default type
+}
+
+/** Attach chart view-state to a finished SQL message: inferred defaults, and an
+ *  auto-open to chart view when the question implied a visual. */
+function initChartView(m) {
+  if (m.kind !== "sql" || !m.result || !m.result.rows?.length) return;
+  const inf = inferChart(m.result.columns, m.result.rows);
+  m.chartable = inf.chartable;
+  if (!inf.chartable) { m.view = "table"; return; }
+  m.chart = { type: inf.type, xIndex: inf.xIndex, yIndexes: inf.yIndexes.slice() };
+  const wanted = wantsChart(m.question);
+  if (wanted) {
+    m.view = "chart";
+    if (wanted !== "auto") m.chart.type = wanted;
+  } else {
+    m.view = "table";
+  }
+}
 
 function msgHtml(m) {
   if (m.role === "user") {
@@ -247,11 +278,129 @@ function statementCardHtml(m) {
     </div>
     ${errDetails}
     <pre class="stmt-sql">${highlightSql(finalAttempt?.sql || "")}</pre>
-    ${succeeded && m.result ? resultTableHtml(m.result) : `<div class="stmt-error-detail" style="border-top:1px solid var(--line-soft)">Gave up after ${m.attempts.length} attempts. The last error is shown above — this usually means the context pack needs a better table description or example.</div>`}
+    ${succeeded && m.result ? resultBodyHtml(m) : `<div class="stmt-error-detail" style="border-top:1px solid var(--line-soft)">Gave up after ${m.attempts.length} attempts. The last error is shown above — this usually means the context pack needs a better table description or example.</div>`}
     <div class="stmt-actions">
       <button class="btn btn-ghost btn-sm" data-copy-sql="${esc(finalAttempt?.sql || "")}">Copy SQL</button>
     </div>
   </div>`;
+}
+
+/** Result area: a Table/Chart toggle (+ chart controls) when the data is
+ *  chartable, then the table or the chart per the message's view-state. */
+function resultBodyHtml(m) {
+  if (!m.chartable) return resultTableHtml(m.result);
+  const view = m.view === "chart" ? "chart" : "table";
+  const chart = m.chart || {};
+  const cols = m.result.columns;
+
+  const seg = `
+    <div class="result-toolbar">
+      <div class="seg">
+        <button class="seg-btn ${view === "table" ? "active" : ""}" data-view="${m.id}:table">Table</button>
+        <button class="seg-btn ${view === "chart" ? "active" : ""}" data-view="${m.id}:chart">Chart</button>
+      </div>
+      ${view === "chart" ? chartControlsHtml(m, chart, cols) : ""}
+    </div>`;
+
+  const body = view === "chart" ? renderChart(m.result, chart) : resultTableHtml(m.result);
+  return seg + body;
+}
+
+function chartControlsHtml(m, chart, cols) {
+  const types = [["line", "Line"], ["bar", "Bar"], ["scatter", "Scatter"]];
+  const typeBtns = types.map(([t, label]) =>
+    `<button class="chip-btn ${chart.type === t ? "active" : ""}" data-chart-type="${m.id}:${t}">${label}</button>`).join("");
+
+  // x selector: any column; y checkboxes: numeric columns only
+  const roles = classifyColumns(cols, m.result.rows);
+  const xOpts = cols.map((c, i) =>
+    `<option value="${i}" ${chart.xIndex === i ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+  const yBoxes = cols.map((c, i) => roles[i] === "number"
+    ? `<label class="ycheck"><input type="checkbox" data-chart-y="${m.id}:${i}" ${chart.yIndexes.includes(i) ? "checked" : ""}/> ${esc(c.name)}</label>`
+    : "").join("");
+
+  return `
+    <div class="chart-ctrls">
+      <div class="chip-group">${typeBtns}</div>
+      ${chart.type !== "scatter" ? `<label class="ctrl-lab">x <select class="mono" data-chart-x="${m.id}">${xOpts}</select></label>` : ""}
+      <div class="ychecks">${yBoxes}</div>
+    </div>`;
+}
+
+function findAgentMsg(id) {
+  return state.chat.messages.find((m) => m.id === +id);
+}
+
+/** Wire the Table/Chart toggle and chart controls; each mutates the message's
+ *  view-state and re-renders (the app's state-driven pattern). */
+function bindChartControls() {
+  document.querySelectorAll("[data-view]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const [id, view] = b.dataset.view.split(":");
+      const m = findAgentMsg(id); if (!m) return;
+      m.view = view; renderChat();
+    }));
+  document.querySelectorAll("[data-chart-type]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const [id, t] = b.dataset.chartType.split(":");
+      const m = findAgentMsg(id); if (!m) return;
+      m.chart.type = t;
+      // scatter needs a numeric x; if the current x isn't numeric, pick one
+      if (t === "scatter") {
+        const roles = classifyColumns(m.result.columns, m.result.rows);
+        if (roles[m.chart.xIndex] !== "number") {
+          const firstNum = roles.findIndex((r) => r === "number");
+          if (firstNum >= 0) m.chart.xIndex = firstNum;
+        }
+      }
+      renderChat();
+    }));
+  document.querySelectorAll("[data-chart-x]").forEach((sel) =>
+    sel.addEventListener("change", () => {
+      const m = findAgentMsg(sel.dataset.chartX); if (!m) return;
+      m.chart.xIndex = +sel.value;
+      m.chart.yIndexes = m.chart.yIndexes.filter((i) => i !== m.chart.xIndex);
+      renderChat();
+    }));
+  document.querySelectorAll("[data-chart-y]").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      const [id, idx] = cb.dataset.chartY.split(":");
+      const m = findAgentMsg(id); if (!m) return;
+      const i = +idx;
+      const set = new Set(m.chart.yIndexes);
+      if (cb.checked) set.add(i); else set.delete(i);
+      if (set.size === 0) { cb.checked = true; return; } // keep at least one series
+      m.chart.yIndexes = [...set].sort((a, b) => a - b);
+      renderChat();
+    }));
+}
+
+/* Floating chart tooltip — one delegated listener bound once at boot, so it
+   survives renderChat()'s full re-renders. Marks carry data-label/x/value. */
+function initChartTooltip() {
+  let tip = $("#chart-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "chart-tip";
+    tip.className = "chart-tip";
+    tip.hidden = true;
+    document.body.appendChild(tip);
+  }
+  document.addEventListener("mouseover", (e) => {
+    const mark = e.target.closest?.("[data-value]");
+    if (!mark) return;
+    tip.innerHTML = `<div class="tip-x">${esc(mark.dataset.x || "")}</div>`
+      + `<div class="tip-v"><b>${esc(mark.dataset.label || "")}</b> ${esc(mark.dataset.value || "")}</div>`;
+    tip.hidden = false;
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (tip.hidden) return;
+    tip.style.left = (e.clientX + 14) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (e.target.closest?.("[data-value]")) tip.hidden = true;
+  });
 }
 
 function resultTableHtml(r) {
@@ -420,7 +569,9 @@ function handleStreamEvent(evt, s) {
       // Carry the captured reasoning onto the finished SQL answer (text answers
       // have no reasoning to keep — the prose there was the answer itself).
       const thinking = msg.kind === "sql" ? s.think : "";
-      state.chat.messages.push({ role: "agent", ...msg, thinking });
+      const agentMsg = { role: "agent", id: ++msgIdSeq, question: s.question, ...msg, thinking };
+      initChartView(agentMsg);
+      state.chat.messages.push(agentMsg);
       if (msg.stats) {
         state.diagnostics.last = msg.stats;
         state.diagnostics.history.push(msg.stats);
@@ -450,7 +601,7 @@ async function sendMessage() {
 
   state.chat.messages.push({ role: "user", text });
   state.chat.busy = true;
-  state.chat.streaming = { status: "generating…", mode: "draft", gen: "", think: "", summary: "", attempts: [] };
+  state.chat.streaming = { status: "generating…", mode: "draft", gen: "", think: "", summary: "", attempts: [], question: text };
   renderChat();
 
   const s = state.chat.streaming;
@@ -908,3 +1059,4 @@ window.addEventListener("hashchange", route);
 route();
 pollHealth();
 setInterval(pollHealth, 30_000);
+initChartTooltip();
