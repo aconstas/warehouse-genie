@@ -6,6 +6,7 @@ const config = require("./lib/config");
 const contextPack = require("./lib/contextPack");
 const databricks = require("./lib/databricks");
 const ollama = require("./lib/ollama");
+const embeddings = require("./lib/embeddings");
 const agent = require("./lib/agent");
 
 const PORT = process.env.PORT || 4177;
@@ -145,14 +146,33 @@ app.post("/api/pack/sync-tables", async (req, res) => {
   }
 });
 
+/* Warm the embedding index for the current pack. Only entries whose text
+   changed are re-embedded, so this is cheap to click repeatedly. Plain JSON is
+   fine at pack sizes in the low hundreds; past that, switch to the NDJSON
+   progress pattern /api/chat uses. */
+app.post("/api/pack/reindex", async (_req, res) => {
+  const startedAt = Date.now();
+  try {
+    const cfg = config.load();
+    const pack = contextPack.load();
+    const { embedded, cached, pruned, model, dim } = await embeddings.ensureIndex({ cfg, pack });
+    res.json({ embedded, cached, pruned, model, dim, ms: Date.now() - startedAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /* ------------------------------------------------------- settings + health */
 
 app.get("/api/settings", (_req, res) => res.json(config.publicView(config.load())));
 
 const SETTINGS_KEYS = [
   "databricksHost", "databricksToken", "warehouseId",
-  "ollamaUrl", "ollamaModel", "maxRetries", "rowLimit"
+  "ollamaUrl", "ollamaModel", "embeddingModel", "retrievalMode",
+  "maxTables", "maxExamples", "maxRetries", "rowLimit"
 ];
+
+const RETRIEVAL_MODES = ["hybrid", "lexical", "embedding"];
 
 app.put("/api/settings", (req, res) => {
   const body = req.body || {};
@@ -162,12 +182,15 @@ app.put("/api/settings", (req, res) => {
     if (body[key] !== undefined) patch[key] = body[key];
   }
   // Coerce the numeric settings and reject junk rather than persisting a string.
-  for (const key of ["maxRetries", "rowLimit"]) {
+  for (const key of ["maxTables", "maxExamples", "maxRetries", "rowLimit"]) {
     if (patch[key] !== undefined) {
       const n = Number(patch[key]);
       if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: `${key} must be a non-negative number` });
       patch[key] = Math.floor(n);
     }
+  }
+  if (patch.retrievalMode !== undefined && !RETRIEVAL_MODES.includes(patch.retrievalMode)) {
+    return res.status(400).json({ error: `retrievalMode must be one of ${RETRIEVAL_MODES.join(", ")}` });
   }
   // Don't overwrite the stored token with the masked value round-tripped from the UI
   if (!patch.databricksToken || patch.databricksToken.startsWith("••••")) delete patch.databricksToken;
@@ -198,11 +221,20 @@ app.get("/api/ollama/models", async (req, res) => {
   }
 });
 
-/* Preview the exact prompt the agent would build for a question (data team debugging aid) */
-app.post("/api/prompt-preview", (req, res) => {
+/* Preview the exact prompt the agent would build for a question, plus the
+   retrieval mode and per-candidate scores (data team debugging aid) */
+app.post("/api/prompt-preview", async (req, res) => {
   const { question } = req.body || {};
-  const built = agent.buildSystemPrompt(contextPack.load(), question || "");
-  res.json(built);
+  try {
+    const built = await agent.buildSystemPrompt({
+      cfg: config.load(),
+      pack: contextPack.load(),
+      question: question || ""
+    });
+    res.json(built);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, "127.0.0.1", () => {

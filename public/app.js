@@ -721,8 +721,10 @@ function packTabHtml(d) {
           <input type="text" id="sync-tables" placeholder="campaign_performance_daily, campaigns" class="mono" />
           <div class="actions-row">
             <button class="btn" id="btn-sync">Pull table metadata</button>
+            <button class="btn btn-ghost" id="btn-reindex" title="Embed table descriptions and examples for semantic retrieval">Rebuild search index</button>
           </div>
           <p class="hint" style="margin-bottom:0">Pulls columns, types, and comments from information_schema. Your descriptions and synonyms are preserved on re-sync.</p>
+          <p class="hint" id="reindex-out" style="margin-bottom:0"></p>
         </div>
         ${d.tables.length === 0 ? `<p class="hint">No tables yet. Sync a schema above — this is what the model is allowed to query.</p>` : ""}
         ${d.tables.map((t, i) => `
@@ -780,6 +782,7 @@ function packTabHtml(d) {
           <input type="text" id="preview-q" placeholder="What was spend by platform last month?" />
           <button class="btn" id="btn-preview">Build prompt</button>
         </div>
+        <div id="preview-scores" style="margin-top:14px"></div>
         <pre class="stmt-sql" id="preview-out" style="margin-top:14px; white-space:pre-wrap; border:1px solid var(--line-soft); border-radius:10px; background:var(--surface)"></pre>`;
   }
 }
@@ -807,6 +810,24 @@ function bindPackTab() {
     } catch (e) {
       toast(e.message, true);
       btn.disabled = false; btn.textContent = "Pull table metadata";
+    }
+  });
+
+  // Warms the embedding cache. Cheap to click twice — only entries whose text
+  // changed are re-embedded, so a second run reports everything cached.
+  $("#btn-reindex")?.addEventListener("click", async () => {
+    const btn = $("#btn-reindex");
+    const out = $("#reindex-out");
+    btn.disabled = true; btn.textContent = "Indexing…";
+    out.textContent = "Embedding table descriptions and examples — this can take a moment on CPU.";
+    try {
+      const r = await api("/api/pack/reindex", { method: "POST", body: {} });
+      out.textContent = `${r.embedded} embedded · ${r.cached} already cached${r.pruned ? ` · ${r.pruned} pruned` : ""} · ${r.model} (${r.dim}d) in ${(r.ms / 1000).toFixed(1)}s`;
+    } catch (e) {
+      out.textContent = "";
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false; btn.textContent = "Rebuild search index";
     }
   });
 
@@ -840,9 +861,54 @@ function bindPackTab() {
   $("#btn-preview")?.addEventListener("click", async () => {
     const q = $("#preview-q").value.trim();
     if (!q) return;
-    const res = await api("/api/prompt-preview", { method: "POST", body: { question: q } });
-    $("#preview-out").textContent = res.prompt;
+    const btn = $("#btn-preview");
+    btn.disabled = true; btn.textContent = "Building…";
+    try {
+      const res = await api("/api/prompt-preview", { method: "POST", body: { question: q } });
+      $("#preview-out").textContent = res.prompt;
+      $("#preview-scores").innerHTML = retrievalScoresHtml(res);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false; btn.textContent = "Build prompt";
+    }
   });
+}
+
+/* How each candidate ranked, so the data team can tell whether a pack's
+   descriptions are actually pulling their weight. Switch retrievalMode in
+   Settings and re-run the same question to A/B lexical against hybrid. */
+function retrievalScoresHtml(res) {
+  const modeNote = {
+    "hybrid": "keyword + embedding, fused by reciprocal rank",
+    "lexical": "keyword only",
+    "embedding": "embedding only",
+    "lexical-fallback": "embeddings unavailable — check that the embedding model is pulled"
+  }[res.mode] || "";
+
+  const rows = (list) => list.map((r) => `
+    <tr style="opacity:${r.used ? 1 : 0.45}">
+      <td style="padding:3px 10px 3px 0">${r.used ? "✓" : ""}</td>
+      <td style="padding:3px 10px 3px 0" class="mono">${esc(r.label)}</td>
+      <td style="padding:3px 10px 3px 0; text-align:right">${r.lex.toFixed(2)}</td>
+      <td style="padding:3px 10px 3px 0; text-align:right">${r.vec === null ? "—" : r.vec.toFixed(3)}</td>
+      <td style="padding:3px 0; text-align:right">${r.rrf.toFixed(5)}</td>
+    </tr>`).join("");
+
+  const section = (title, list) => !list?.length ? "" : `
+    <div class="eyebrow" style="margin:10px 0 4px">${title}</div>
+    <table style="width:100%; font-size:12px; border-collapse:collapse">
+      <tr class="hint"><th></th><th style="text-align:left">candidate</th><th style="text-align:right">lex</th><th style="text-align:right">cos</th><th style="text-align:right">rrf</th></tr>
+      ${rows(list)}
+    </table>`;
+
+  return `
+    <div class="card" style="padding:12px 14px">
+      <div class="card-sub">retrieval: <span class="mono">${esc(res.mode)}</span>${modeNote ? ` — ${esc(modeNote)}` : ""}
+        · example floor cos ≥ ${res.scores?.minSimilarity ?? "—"}</div>
+      ${section("tables", res.scores?.tables)}
+      ${section("examples", res.scores?.examples)}
+    </div>`;
 }
 
 async function savePack() {
@@ -947,9 +1013,9 @@ function diagnosticsHtml() {
  *  `preselect` (the saved model) wins on first open; afterwards we keep whatever
  *  is currently chosen. The saved/chosen model is always kept as an option even
  *  if it isn't installed (or Ollama is down), so Save never loses it. */
-async function refreshModels(preselect) {
-  const sel = $("#s-model");
-  const status = $("#s-model-status");
+async function refreshModels(preselect, selId = "s-model") {
+  const sel = $(`#${selId}`);
+  const status = $(`#${selId}-status`);
   if (!sel) return;
   const want = (preselect ?? sel.value ?? "").trim();
   const url = $("#s-ollama")?.value.trim();
@@ -975,9 +1041,9 @@ async function refreshModels(preselect) {
     return `<option value="${esc(m)}" ${m === selectedVal ? "selected" : ""}>${esc(label)}</option>`;
   }).join("");
 
-  status.textContent = data.ok
-    ? `${models.length} model${models.length === 1 ? "" : "s"} installed`
-    : "Ollama not reachable — start it and click ↻";
+  if (!data.ok) status.textContent = "Ollama not reachable — start it and click ↻";
+  else if (want && !installedMatch) status.textContent = `Not installed — run: ollama pull ${want}`;
+  else status.textContent = `${models.length} model${models.length === 1 ? "" : "s"} installed`;
 }
 
 async function settingsModal() {
@@ -1000,6 +1066,26 @@ async function settingsModal() {
     </div>
     <div class="hint" id="s-model-status" style="margin-top:6px">Loading models…</div>
 
+    <div class="diag-head">Retrieval <span class="diag-tag">how tables are picked</span></div>
+    <label>Mode</label>
+    <select id="s-retrieval" class="mono">
+      ${[["hybrid", "Hybrid — keyword + embeddings (recommended)"],
+         ["lexical", "Lexical — keyword only, no embedding calls"],
+         ["embedding", "Embedding — semantic only"]]
+        .map(([v, label]) => `<option value="${v}" ${s.retrievalMode === v ? "selected" : ""}>${esc(label)}</option>`).join("")}
+    </select>
+    <label>Embedding model</label>
+    <div style="display:flex; gap:8px; align-items:center">
+      <select id="s-embed-model" class="mono"></select>
+      <button class="btn btn-sm" id="s-embed-refresh" type="button" title="Reload installed models">↻</button>
+    </div>
+    <div class="hint" id="s-embed-model-status" style="margin-top:6px">Loading models…</div>
+    <div class="grid-2">
+      <div><label>Max tables in prompt</label><input type="number" id="s-max-tables" min="1" value="${esc(String(s.maxTables))}" class="mono" /></div>
+      <div><label>Max examples in prompt</label><input type="number" id="s-max-examples" min="0" value="${esc(String(s.maxExamples))}" class="mono" /></div>
+    </div>
+    <p class="hint">Rebuild the search index from Context pack → Tables after editing descriptions. If embeddings are unavailable, retrieval silently falls back to keyword ranking — the preview tab shows which mode actually ran.</p>
+
     <div class="diag-head">Diagnostics <span class="diag-tag">inference speed</span></div>
     ${diagnosticsHtml()}
 
@@ -1011,8 +1097,13 @@ async function settingsModal() {
   // Populate the model dropdown from the user's Ollama; refresh on demand or
   // when the URL changes.
   refreshModels(s.ollamaModel);
+  refreshModels(s.embeddingModel, "s-embed-model");
   $("#s-model-refresh").addEventListener("click", () => refreshModels());
-  $("#s-ollama").addEventListener("change", () => refreshModels());
+  $("#s-embed-refresh").addEventListener("click", () => refreshModels(undefined, "s-embed-model"));
+  $("#s-ollama").addEventListener("change", () => {
+    refreshModels();
+    refreshModels(undefined, "s-embed-model");
+  });
 
   $("#s-cancel").addEventListener("click", closeModal);
   $("#s-save").addEventListener("click", async () => {
@@ -1023,7 +1114,11 @@ async function settingsModal() {
         databricksToken: $("#s-token").value.trim(),
         warehouseId: $("#s-wh").value.trim(),
         ollamaUrl: $("#s-ollama").value.trim(),
-        ollamaModel: $("#s-model").value.trim()
+        ollamaModel: $("#s-model").value.trim(),
+        embeddingModel: $("#s-embed-model").value.trim(),
+        retrievalMode: $("#s-retrieval").value,
+        maxTables: $("#s-max-tables").value,
+        maxExamples: $("#s-max-examples").value
       }
     });
     closeModal();
