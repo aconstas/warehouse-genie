@@ -34,16 +34,17 @@ A demo context pack (`context-pack.json`) ships with the repo so you can see wha
 public/           vanilla JS SPA (chat + context pack editor)
 server.js         Express, binds 127.0.0.1 only
 lib/agent.js      the loop: build prompt → generate → execute → retry on error → summarize
-lib/retrieval.js  lexical ranking of tables + examples per question (upgrade path: embeddings)
+lib/retrieval.js  hybrid ranking of tables + examples per question (keyword + embeddings)
+lib/embeddings.js embedding cache + cosine search over the pack (per-space JSON sidecar)
 lib/databricks.js SQL Statement Execution API + information_schema metadata sync
-lib/ollama.js     local chat completions (strips qwen3 <think> blocks)
+lib/ollama.js     local chat completions (strips qwen3 <think> blocks) + embeddings
 lib/contextPack.js versioned JSON store — the "Genie space"
 lib/config.js     config.json settings, env-var overrides
 ```
 
 The agent turn, end to end:
 
-1. Retrieve the most relevant tables and example pairs from the context pack (keyword scoring; swap in embeddings later without touching the loop).
+1. Retrieve the most relevant tables and example pairs from the context pack. Keyword overlap and embedding similarity are ranked separately and fused (reciprocal rank), so exact identifiers and business-language paraphrases both hit. If Ollama or the embedding model is unavailable, retrieval degrades to keyword-only rather than failing the turn.
 2. Build a system prompt: instructions → table schemas → join hints → retrieved examples → rules.
 3. Ask Ollama. If the model replies in prose (ambiguous question), that's surfaced as a clarification instead of SQL.
 4. Guardrail: only read statements (`SELECT`/`WITH`/`SHOW`/`DESCRIBE`/`EXPLAIN`) are executed.
@@ -86,7 +87,7 @@ No frontend changes are required — it's a static bundle talking to localhost o
 
 ## Upgrade path worth doing next
 
-- [ ] **Embeddings retrieval**: `nomic-embed-text` via Ollama + `sqlite-vec`, replacing `lib/retrieval.js` scoring.
+- [x] **Embeddings retrieval**: `nomic-embed-text` via Ollama, fused with the existing keyword score. Vectors live in a per-space JSON sidecar (`.genie/embeddings/<pack>.json`) scanned brute-force — at ~100 tables per space that's microseconds, so `sqlite-vec` would only buy a native dependency (compile on install, `electron-rebuild` per platform). Run `ollama pull nomic-embed-text`, then Context pack → Tables → Rebuild search index.
 - [x] **Streaming**: SQL generation and the answer summary stream token-by-token into the statement card as the model produces them (`/api/chat` streams NDJSON events).
 - [ ] **Result charts**: a bar/line toggle over the result table covers most stakeholder asks.
 - [ ] **Feedback loop**: a 👍 on a good answer should offer "save as example" into the pack — that's how the pack compounds.

@@ -14,12 +14,12 @@ test("toNumber parses stringified numbers, rejects junk", () => {
 
 test("classifyColumns: type strings then value fallback", () => {
   const cols = [{ name: "d", type: "DATE" }, { name: "c", type: "STRING" }, { name: "n", type: "DOUBLE" }, { name: "u", type: "" }];
-  const rows = [["2024-01-01", "GMA", "0.5", "10"], ["2024-02-01", "HMA", "0.6", "20"]];
+  const rows = [["2024-01-01", "alpha", "0.5", "10"], ["2024-02-01", "beta", "0.6", "20"]];
   assert.deepEqual(classifyColumns(cols, rows), ["date", "category", "number", "number"]);
 });
 
 test("inferChart: date + numeric -> line over the date", () => {
-  const cols = [{ name: "date_month", type: "DATE" }, { name: "win_rate", type: "DOUBLE" }];
+  const cols = [{ name: "period", type: "DATE" }, { name: "value", type: "DOUBLE" }];
   const rows = [["2024-01-01", "0.2"], ["2024-02-01", "0.25"], ["2024-03-01", "0.3"]];
   const r = inferChart(cols, rows);
   assert.equal(r.chartable, true);
@@ -30,7 +30,7 @@ test("inferChart: date + numeric -> line over the date", () => {
 
 test("inferChart: category + numeric -> bar over the category", () => {
   const cols = [{ name: "brand", type: "STRING" }, { name: "cnt", type: "BIGINT" }];
-  const rows = [["GMA", "100"], ["HMA", "220"]];
+  const rows = [["alpha", "100"], ["beta", "220"]];
   const r = inferChart(cols, rows);
   assert.equal(r.type, "bar");
   assert.equal(r.xIndex, 0);

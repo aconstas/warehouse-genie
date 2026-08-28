@@ -13,3 +13,9 @@ context-pack.json
 
 # Project-specific Claude instructions — kept local, not tracked
 CLAUDE.md
+
+# Embedding vector cache — derived from context-pack.json, safe to delete
+.genie/
+
+# Test fixtures reference real pack content — kept local, not tracked
+test/embeddings.test.js
